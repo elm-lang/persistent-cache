@@ -1,0 +1,17 @@
+{
+    "version": "1.0.0",
+    "summary": "Persistent storage, exposing the localStorage browser API",
+    "repository": "http://github.com/elm-lang/local-storage.git",
+    "license": "BSD3",
+    "source-directories": [
+        "src"
+    ],
+    "exposed-modules": [
+        "LocalStorage"
+    ],
+    "native-modules": true,
+    "dependencies": {
+        "elm-lang/core": "4.0.0 <= v < 5.0.0"
+    },
+    "elm-version": "0.17.0 <= v < 0.18.0"
+}
