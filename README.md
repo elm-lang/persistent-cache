@@ -1,3 +1,3 @@
 # Local Storage in Elm
 
-THIS IS A DRAFT. It will be release when I am done.
+THIS IS A DRAFT. I hope to release it relatively soon, but I cannot make any promises. Until then, please use ports.
