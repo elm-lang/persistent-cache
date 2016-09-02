@@ -1,15 +1,32 @@
 
-var _elm_lang$local_storage$Native_LocalStorage = function() {
+var _evancz$elm_todomvc$Native_LocalStorage = function() {
+
+if (!localStorage || !localStorage.getItem || !localStorage.setItem)
+{
+	function disabled()
+	{
+		return _elm_lang$core$Native_Scheduler.fail({ ctor: 'Disabled' });
+	}
+
+	return {
+		get: disabled,
+		set: F2(disabled),
+		remove: disabled,
+		clear: disabled(),
+		keys: disabled()
+	};
+}
 
 function get(key)
 {
 	return _elm_lang$core$Native_Scheduler.nativeBinding(function(callback)
 	{
 		var value = localStorage.getItem(key);
-		callback(value === null
-			? _elm_lang$core$Native_Scheduler.fail({ ctor: 'KeyNotFound', _0: key })
-			: _elm_lang$core$Native_Scheduler.succeed(value)
-		);
+		callback(_elm_lang$core$Native_Scheduler.succeed(
+			value === null
+				? _elm_lang$core$Maybe$Nothing
+				: _elm_lang$core$Maybe$Just(value)
+		));
 	});
 }
 
@@ -17,8 +34,15 @@ function set(key, value)
 {
 	return _elm_lang$core$Native_Scheduler.nativeBinding(function(callback)
 	{
-		localStorage.setItem(key, value);
-		callback(_elm_lang$core$Native_Scheduler.succeed(_elm_lang$core$Native_Utils.Tuple0));
+		try
+		{
+			localStorage.setItem(key, value);
+			return callback(_elm_lang$core$Native_Scheduler.succeed(_elm_lang$core$Native_Utils.Tuple0));
+		}
+		catch (e)
+		{
+			return callback(_elm_lang$core$Native_Scheduler.fail({ctor : "QuotaExceeded"}));
+		}
 	});
 }
 
