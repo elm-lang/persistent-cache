@@ -1,5 +1,5 @@
 
-var _evancz$elm_todomvc$Native_LocalStorage = function() {
+var _elm_lang$persistent_cache$Native_LocalStorage = function() {
 
 if (!localStorage || !localStorage.getItem || !localStorage.setItem)
 {
@@ -41,7 +41,7 @@ function set(key, value)
 		}
 		catch (e)
 		{
-			return callback(_elm_lang$core$Native_Scheduler.fail({ctor : "QuotaExceeded"}));
+			return callback(_elm_lang$core$Native_Scheduler.fail({ ctor: 'QuotaExceeded' }));
 		}
 	});
 }

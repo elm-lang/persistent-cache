@@ -7,10 +7,7 @@ module LocalStorage exposing
   , Error(..)
   )
 
-{-| Bindings for the [localStorage][] API. This lets you store values in a
-user&rsquo;s browser. As of this writing, you get about 5mb of space that
-persists from session to session. So unless they clear out their browser, the
-information will be available next time they visit your site.
+{-| Low-level bindings to the [localStorage][] API.
 
 [localStorage]: https://developer.mozilla.org/en-US/docs/Web/API/Window/localStorage
 
@@ -23,70 +20,42 @@ information will be available next time they visit your site.
 -}
 
 
-import Json.Decode as Json
-import Json.Encode as Encode
 import Native.LocalStorage
 import Task exposing (Task)
 
 
-{-| These operations can fail in a few ways.
+{-| These low-level operations can fail in a few ways:
 
-  - `UnexpectedData` means `get` found the key, but the value was not the shape
-    you wanted.
-  - `QuotaExceeded` means you exceeded your 5mb (or whatever it happens to be)
-    and need to `clear` or `remove` some information to make more space.
+  - `QuotaExceeded` means you exceeded your 5mb and need to `clear` or `remove`
+    some information to make more space.
   - `Disabled` means the user turned off local storage. It is rare, but it can
-  happen.
-
+    happen.
 -}
 type Error
-  = UnexpectedData String String
-  | QuotaExceeded
+  = QuotaExceeded
   | Disabled
 
 
 {-| Get the value at a particular key.
 
-    get "age" Json.Decode.int
-
-If the key is found, `get` will try to decode the value with the decoder you
-gave. If it succeeds, you get back `Just` the value you asked for. If the
-decoder fails, it will trigger an `UnexpectedData` error that tells you the
-key, and the error message from the decoder.
-
-If the key is not found, you just get `Nothing` back.
+    get "age"
 -}
-get : String -> Json.Decoder a -> Task Error (Maybe a)
-get key decoder =
-  Native.LocalStorage.get key `Task.andThen` maybeDecode key decoder
-
-
-maybeDecode : String -> Json.Decoder a -> Maybe String -> Task Error (Maybe a)
-maybeDecode key decoder maybeValue =
-  case maybeValue of
-    Nothing ->
-      Task.succeed Nothing
-
-    Just rawValue ->
-      case Json.decodeString decoder rawValue of
-        Ok value ->
-          Task.succeed (Just value)
-
-        Err msg ->
-          Task.fail (UnexpectedData key msg)
+get : String -> Task Error (Maybe String)
+get =
+  Native.LocalStorage.get
 
 
 {-| Set a key to a particular value. If the key does not exist, it is added.
 If the key already exists, we overwrite the old data.
 
-    set "age" (Json.Encode.int 42)
+    set "age" "42"
 
-As of this writing, most browsers cap you at 5MB of space, so this can trigger
-a `QuotaExceeded` error if you are adding enough data to cross that threshold.
+Most browsers cap you at 5MB of space, so this can trigger a `QuotaExceeded`
+error if you are adding enough data to cross that threshold.
 -}
-set : String -> Json.Value -> Task Error ()
-set key value =
-  Native.LocalStorage.set key (Encode.encode 0 value)
+set : String -> String -> Task Error ()
+set =
+  Native.LocalStorage.set
 
 
 {-| Remove a particular key and its corresponding value.
@@ -112,4 +81,3 @@ clear =
 keys : Task Error (List String)
 keys =
   Native.LocalStorage.keys
-
