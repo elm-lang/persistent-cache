@@ -27,7 +27,7 @@ import PersistentCache as Cache
 
 todoCache : Cache.Cache
 todoCache =
-  Cache.cache "model" 1 1000
+  Cache.cache "model" 1 1024
 
 getModel : Task x (Maybe Model)
 getModel =
@@ -48,11 +48,11 @@ So we decide that we want to use at most 1mb of space on storing their `Model`. 
 
 You may be wondering &ldquo;why not just give people access to the `localStorage` API directly?&rdquo;
 
-**First, caches are better for your users.** Imagine we are storing email information for reading emails offline. Users do not want us filling up their whole computer with this information, so we will want to set a limit on how much space is devoted to this. Say we choose 100kb as our limit, and after that point we start evicting the oldest info. Sounds like a pretty nice strategy: the user gets offline emails and their device does not get filled with crap!
+First, **caches are better for your users.** Imagine we are storing email information for reading emails offline. Users do not want us filling up their whole device with this information, so we will want to set a limit on how much space is devoted to this. Say we choose 100kb as our limit, and after that point we start evicting the oldest info. Sounds like a pretty nice strategy: the user gets offline emails and their device does not get filled with crap!
 
 Turns out, this is exactly how a cache works! We described an [LRU cache](https://en.wikipedia.org/wiki/Cache_algorithms) just now.
 
-**Second, it is the right technical choice.** Even if you *want* unlimited storage in browsers, you cannot have it. Most browsers give you about 5mb of space with `localStorage`, and if you go over that quota, you start getting runtime exceptions from the JS API. So you can just hope that this never happens in practice. And when it does, you will have to find a way to migrate the data in your users&rsquo; *browsers* to a better approach. Probably some kind of cache.
+Second, **it is the right technical choice.** Even if you *want* unlimited storage in browsers, you cannot have it. Most browsers give you about 5mb of space with `localStorage`, and if you go over that quota, you start getting runtime exceptions from the JS API. So you can just hope that this never happens in practice. And when it does, you will have to find a way to migrate the data in your users&rsquo; *browsers* to a better approach. Probably some kind of cache.
 
 Users also can clear this information from their browser settings, so even if you do not hit the limit, everything may be cleared out.
 
