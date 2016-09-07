@@ -262,8 +262,23 @@ addHelp settings time key value ((bits, equeue) as info) =
       Task.succeed ( (), info )
 
     else
-      trySetWithEviction settings entryBits qualifiedKey (\_ _ -> valueString) bits equeue
-        |> Task.map ((,) ())
+      let
+        toBitsDiff maybeOldString =
+          case maybeOldString of
+            Nothing ->
+              entryBits
+
+            Just oldString ->
+              entryBits - getSize qualifiedKey oldString
+
+        tryAdd bitsDiff =
+          trySetWithEviction settings bitsDiff qualifiedKey (\_ _ -> valueString) bits equeue
+      in
+        LS.get qualifiedKey
+          |> onError (\_ -> Task.succeed Nothing)
+          |> Task.map toBitsDiff
+          |> andThen tryAdd
+          |> Task.map ((,) ())
 
 
 
@@ -510,14 +525,14 @@ trySetWithEviction
   -> Int
   -> EQueue
   -> Task x (Int, EQueue)
-trySetWithEviction settings entryBits key makeValue bits equeue =
-  if bits + entryBits > settings.maxBits then
-    retrySetWithEviction settings entryBits key makeValue bits equeue
+trySetWithEviction settings bitsDiff key makeValue bits equeue =
+  if bits + bitsDiff > settings.maxBits then
+    retrySetWithEviction settings bitsDiff key makeValue bits equeue
 
   else
     LS.set key (makeValue bits equeue)
-      |> andThen (\_ -> Task.succeed (bits + entryBits, equeue))
-      |> onError (\_ -> retrySetWithEviction settings entryBits key makeValue bits equeue)
+      |> andThen (\_ -> Task.succeed (bits + bitsDiff, equeue))
+      |> onError (\_ -> retrySetWithEviction settings bitsDiff key makeValue bits equeue)
 
 
 retrySetWithEviction
@@ -528,19 +543,19 @@ retrySetWithEviction
   -> Int
   -> EQueue
   -> Task x (Int, EQueue)
-retrySetWithEviction settings entryBits key makeValue bits equeue =
+retrySetWithEviction settings bitsDiff key makeValue bits equeue =
   case equeue of
     [] ->
       flip andThen (getEvictionQueue settings) <| \newQueue ->
         if List.isEmpty newQueue then
           Task.succeed (0, [])
         else
-          trySetWithEviction settings entryBits key makeValue bits newQueue
+          trySetWithEviction settings bitsDiff key makeValue bits newQueue
 
     {key, data} :: rest ->
       LS.remove key
         |> onError (\_ -> Task.succeed ())
-        |> andThen (\_ -> trySetWithEviction settings entryBits key makeValue (bits - data) rest)
+        |> andThen (\_ -> trySetWithEviction settings bitsDiff key makeValue (bits - data) rest)
 
 
 type alias EQueue =
