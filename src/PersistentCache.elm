@@ -38,6 +38,7 @@ or just clear out everything and start fresh.
 -}
 
 
+import Dict
 import Json.Decode as Decode exposing ((:=))
 import Json.Encode as Encode
 import String
@@ -55,15 +56,15 @@ import LocalStorage as LS
 {-| Description of a cache. What is it named? How big is it? What eviction
 policy does it use?
 -}
-type Cache a = Cache (Settings a)
+type Cache data = Cache (Settings data)
 
 
-type alias Settings =
+type alias Settings data =
   { name : String
   , version : Int
   , maxBits : Int
-  , encode : a -> Encode.Value
-  , decode : Decode.Decoder a
+  , encode : data -> Encode.Value
+  , decode : Decode.Decoder data
   , policy : Policy
   , migrations : List Migration
   , overflow : Task Never ()
@@ -72,12 +73,21 @@ type alias Settings =
 
 {-|
 -}
-cache : String -> Int -> Int -> Cache
-cache name version kilobytes =
+cache
+  : { name : String
+    , version : Int
+    , kilobytes : Int
+    , decode : Decode.Decoder data
+    , encode : data -> Encode.Value
+    }
+  -> Cache data
+cache { name, version, kilobytes, encode, decode } =
   Cache
     { name = name
     , version = version
     , maxBits = 8 * 1024 * kilobytes
+    , decode = decode
+    , encode = encode
     , policy = LRU
     , migrations = []
     , overflow = Task.succeed ()
@@ -93,7 +103,7 @@ toQualifiedKey settings key =
   toKeyPrefix settings ++ "#" ++ key
 
 
-toKeyPrefix : Cache a -> String
+toKeyPrefix : Settings a -> String
 toKeyPrefix { name } =
   "#" ++ name
 
@@ -117,18 +127,24 @@ data to avoid HTTP requests, we may try to look it up like this:
 This will give you Tommy&rsquo;s data as long as someone added `Student` data
 for `tommy` in the past and it is still in the cache. Otherwise `Nothing`.
 -}
-get : Cache a -> String -> Task x (Maybe a)
+get : Cache data -> String -> Task x (Maybe data)
 get (Cache settings) key =
-  LS.get (toQualifiedKey settings key)
-    |> andThen (getHelp settings key)
-    |> onError (\_ -> Task.succeed Nothing)
+  safely settings <| \info ->
+    LS.get (toQualifiedKey settings key)
+      |> andThen (getHelp settings info key)
+      |> onError (\_ -> Task.succeed (Nothing, info))
 
 
-getHelp : Settings a -> String -> Maybe String -> Task LS.Error (Maybe a)
-getHelp settings key maybeString =
+getHelp
+  : Settings a
+  -> (Int, EQueue)
+  -> String
+  -> Maybe String
+  -> Task LS.Error (Maybe a, (Int, EQueue))
+getHelp settings info key maybeString =
   case maybeString of
     Nothing ->
-      Task.succeed Nothing
+      Task.succeed (Nothing, info)
 
     Just string ->
       let
@@ -137,16 +153,32 @@ getHelp settings key maybeString =
       in
         case Decode.decodeString (entryDecoder decoderHelp) string of
           Err _ ->
-            Task.succeed Nothing
+            -- TODO report error settings.badDecode
+            Task.succeed (Nothing, info)
 
-          Ok ( _, (jsValue, value) ) ->
+          Ok entry ->
             let
-              newString =
-                Encode.encode 0 (encodeEntry (round time) jsValue)
+              (jsValue, value) =
+                entry.value
+
+              setNewValue time =
+                LS.set (toQualifiedKey settings key) <|
+                  Encode.encode 0 (encodeEntry (round time) jsValue)
             in
               Time.now
-                |> andThen (\time -> LS.set (toQualifiedKey settings key) newString)
-                |> andThen (\_ -> Task.succeed (Just value))
+                |> andThen setNewValue
+                |> andThen (\_ -> Task.succeed (Just value, correctInfo key info))
+
+
+correctInfo : String -> (Int, EQueue) -> (Int, EQueue)
+correctInfo key ((bits, equeue) as info) =
+  if List.any (\item -> key == item.key) equeue then
+    info
+
+  else
+    ( bits
+    , List.filter (\item -> key /= item.key) equeue
+    )
 
 
 
@@ -157,14 +189,14 @@ getHelp settings key maybeString =
 
     clear studentCache
 -}
-clear : Cache a -> Task x ()
-clear cache =
+clear : Cache data -> Task x ()
+clear (Cache settings) =
   let
     prefix =
-      toKeyPrefix cache
+      toKeyPrefix settings
 
     resetMetadata =
-      emptyMetadata cache
+      emptyMetadata settings
         |> encodeMetadata
         |> Encode.encode 0
         |> LS.set prefix
@@ -207,17 +239,13 @@ added. So if the cache holds zero kilobytes, obviously we cannot add anything.
 But the more tricky case is when the cache holds 10kb, and we are trying to add
 something larger than that. That is also impossible!
 -}
-add : Cache a -> String -> a -> Task x ()
+add : Cache data -> String -> data -> Task x ()
 add (Cache settings) key value =
-  toKeyPrefix settings
-    |> LS.get
-    |> Task.map (decodeMetadata settings)
-    |> andThen (checkVersion settings)
-    |> andThen (addHelp settings key value)
+  safely settings (addHelp settings key value)
 
 
-addHelp : Settings a -> String -> a -> (Int, EQueue) -> Task x ()
-addHelp settings key value (bits, equeue) =
+addHelp : Settings a -> String -> a -> (Int, EQueue) -> Task x ( (), (Int, EQueue) )
+addHelp settings key value ((bits, equeue) as info) =
   let
     qualifiedKey =
       toQualifiedKey settings key
@@ -229,51 +257,75 @@ addHelp settings key value (bits, equeue) =
       getSize qualifiedKey valueString
   in
     if entryBits > settings.maxBits then
-      Task.succeed ()
+      Task.succeed ( (), info )
 
     else
-      trySetWithEviction settings entryBits qualifiedKey valueString bits equeue
-        |> andThen (trySetMetadata settings)
-        |> andThen (\_ -> Task.succeed ())
+      trySetWithEviction settings entryBits qualifiedKey (\_ _ -> valueString) bits equeue
+        |> Task.map ((,) ())
 
 
-trySetMetadata : Settings a -> (Int, EQueue) -> Task x (Int, EQueue)
-trySetMetadata settings (bits, equeue) =
+
+-- GUARDED ACCESS
+
+
+safely : Settings data -> ( (Int, EQueue) -> Task x ( a, (Int, EQueue) ) ) -> Task x a
+safely settings doSomeStuff =
   let
-    valueString =
-      Encode.encode 0 <| encodeMetadata <|
-        { version = settings.version
-        , bits = bits
-        , equeue = equeue
-        , policy = settings.policy
-        }
+    useMetadata metadata =
+      checkVersion settings metadata
+        |> andThen doSomeStuff
+        |> andThen (adjustMetadata settings metadata)
   in
-    trySetWithEviction settings 0 (toKeyPrefix settings) valueString bits equeue
+    getMetadata settings
+      |> andThen useMetadata
+
+
+adjustMetadata : Settings data -> Metadata -> ( a, (Int, EQueue) ) -> Task x a
+adjustMetadata settings oldMetadata ( answer, (bits, equeue) ) =
+  let
+    allSame =
+      oldMetadata.bits == bits
+      && oldMetadata.equeue == equeue
+      && oldMetadata.version == settings.version
+  in
+    if allSame then
+      Task.succeed answer
+    else
+      let
+        makeValueString currentBits currentEqueue =
+          Encode.encode 0 <| encodeMetadata <|
+            { version = settings.version
+            , bits = currentBits
+            , equeue = List.take 20 currentEqueue
+            , policy = settings.policy
+            }
+      in
+        trySetWithEviction settings 0 (toKeyPrefix settings) makeValueString bits equeue
+          |> andThen (\_ -> Task.succeed answer)
 
 
 
 -- MIGRATION
 
 
-checkVersion : Settings a -> Metadata -> Task LS.Error (Int, EQueue)
+checkVersion : Settings a -> Metadata -> Task x (Int, EQueue)
 checkVersion settings metadata =
   if metadata.version == settings.version then
-    Task.succeed (metadata,bits, metadata.equeue)
+    Task.succeed (metadata.bits, metadata.equeue)
 
   else
     migrate settings metadata
 
 
-migrate : Settings a -> Metadata -> Task LS.Error (Int, EQueue)
+migrate : Settings a -> Metadata -> Task x (Int, EQueue)
 migrate settings metadata =
-  case findMigration metadata.version settings.version of
+  case findMigration metadata.version settings.version settings.migrations of
     Nothing ->
       clear (Cache settings)
         |> andThen (\_ -> Task.succeed ( 0, [] ))
 
     Just upgrade ->
-      LS.keys
-        |> andThen (crawl settings (migrationStepper upgrade) Dict.empty)
+      crawl settings (migrationStepper upgrade) Dict.empty
         |> andThen (migrateEntries settings)
 
 
@@ -287,17 +339,19 @@ type alias Entries a =
   Dict.Dict Int (Keyed a)
 
 
-migrationStepper : Upgrade -> CrawlStepper LS.Error (Entries String)
+migrationStepper : Upgrade -> CrawlStepper x (Entries String)
 migrationStepper upgrade key oldString entries =
   case Decode.decodeString (entryDecoder Decode.value) oldString of
     Err _ ->
       LS.remove key
+        |> onError (\_ -> Task.succeed ())
         |> andThen (\_ -> Task.succeed entries)
 
     Ok { time, value } ->
       case upgrade key value of
         Nothing ->
           LS.remove key
+            |> onError (\_ -> Task.succeed ())
             |> andThen (\_ -> Task.succeed entries)
 
         Just newValue ->
@@ -317,22 +371,22 @@ migrateEntries settings entries =
     migrateEntriesHelp settings 0 [] entryList
 
 
-migrateEntriesHelp : Settings a -> Int -> EQueue -> List (String, String) -> Task x (Int, EQueue)
+migrateEntriesHelp : Settings a -> Int -> EQueue -> List (Keyed String) -> Task x (Int, EQueue)
 migrateEntriesHelp settings bits equeue entryList =
   case entryList of
     [] ->
       Task.succeed ( bits, equeue )
 
-    (key, value) :: remainingEntries ->
+    { key, data } :: remainingEntries ->
       let
         entryBits =
-          getSize key value
+          getSize key data
 
         newBits =
           bits + entryBits
 
         continue maybeUnit =
-          case mabyeUnit of
+          case maybeUnit of
             Nothing ->
               Task.succeed ( bits, equeue )
 
@@ -343,7 +397,7 @@ migrateEntriesHelp settings bits equeue entryList =
           Task.succeed ( bits, equeue )
 
         else
-          LS.set key value
+          LS.set key data
             |> Task.toMaybe
             |> andThen continue
 
@@ -368,14 +422,14 @@ findMigration low high rawEdges =
   let
     toEdge { from, to, migration } =
       if low <= from || to <= high then
-        Just (Dag.Edge from to migrations)
+        Just (Dag.Edge from to migration)
       else
         Nothing
   in
     rawEdges
       |> List.filterMap toEdge
       |> Dag.fromList
-      |> Dag.shortestPath
+      |> Dag.shortestPath low high
       |> Maybe.map chainUpgrades
 
 
@@ -411,10 +465,11 @@ type alias CrawlStepper x a =
 crawl : Settings data -> CrawlStepper x a -> a -> Task x a
 crawl settings stepper empty =
   LS.keys
+    |> onError (\_ -> Task.succeed [])
     |> andThen (crawlHelp (toKeyPrefix settings) stepper empty)
 
 
-crawlHelp : Entries -> CrawlStepper x a -> a -> List String -> Task x a
+crawlHelp : String -> CrawlStepper x a -> a -> List String -> Task x a
 crawlHelp prefix stepper acc keys =
   case keys of
     [] ->
@@ -426,6 +481,7 @@ crawlHelp prefix stepper acc keys =
 
       else
         LS.get key
+          |> onError (\_ -> Task.succeed Nothing)
           |> andThen (useStepper stepper acc key)
           |> andThen (\newAcc -> crawlHelp prefix stepper newAcc remainingKeys)
 
@@ -444,29 +500,45 @@ useStepper stepper acc key maybeString =
 -- EVICTION
 
 
-trySetWithEviction : Settings a -> Int -> String -> String -> Int -> EQueue -> Task x (Int, EQueue)
-trySetWithEviction settings entryBits key value (bits, equeue) =
+trySetWithEviction
+  : Settings a
+  -> Int
+  -> String
+  -> (Int -> EQueue -> String)
+  -> Int
+  -> EQueue
+  -> Task x (Int, EQueue)
+trySetWithEviction settings entryBits key makeValue bits equeue =
   if bits + entryBits > settings.maxBits then
-    retrySetWithEviction settings entryBits key value bits equeue
+    retrySetWithEviction settings entryBits key makeValue bits equeue
 
   else
-    LS.set key value
-      |> onError (\_ -> retrySetWithEviction settings entryBits key value bits equeue)
+    LS.set key (makeValue bits equeue)
+      |> andThen (\_ -> Task.succeed (bits + entryBits, equeue))
+      |> onError (\_ -> retrySetWithEviction settings entryBits key makeValue bits equeue)
 
 
-retrySetWithEviction : Settings a -> Int -> String -> String -> Int -> EQueue -> Task x (Int, EQueue)
-retrySetWithEviction settings entryBits key value bits equeue =
+retrySetWithEviction
+  : Settings a
+  -> Int
+  -> String
+  -> (Int -> EQueue -> String)
+  -> Int
+  -> EQueue
+  -> Task x (Int, EQueue)
+retrySetWithEviction settings entryBits key makeValue bits equeue =
   case equeue of
     [] ->
-      flip andThen getEvictionQueue <| \newQueue ->
+      flip andThen (getEvictionQueue settings) <| \newQueue ->
         if List.isEmpty newQueue then
           Task.succeed (0, [])
         else
-          trySetWithEviction settings bits newQueue entryBits key value
+          trySetWithEviction settings entryBits key makeValue bits newQueue
 
     {key, data} :: rest ->
       LS.remove key
-        |> andThen (\_ -> trySetWithEviction settings entryBits key value (bits - data) rest)
+        |> onError (\_ -> Task.succeed ())
+        |> andThen (\_ -> trySetWithEviction settings entryBits key makeValue (bits - data) rest)
 
 
 type alias EQueue =
@@ -477,14 +549,14 @@ getEvictionQueue : Settings a -> Task x EQueue
 getEvictionQueue settings =
   crawl settings evictionStepper Dict.empty
     |> Task.map Dict.values
-    |> onError (\_ -> [])
 
 
-evictionStepper : CrawlStepper LS.Error (Entries Int)
+evictionStepper : CrawlStepper x (Entries Int)
 evictionStepper key valueString entries =
   case Decode.decodeString entryTimeDecoder valueString of
     Err _ ->
       LS.remove key
+        |> onError (\_ -> Task.succeed ())
         |> andThen (\_ -> Task.succeed entries)
 
     Ok time ->
@@ -529,6 +601,13 @@ metadataDecoder =
     ( "bits" := Decode.int )
     ( "equeue" := Decode.list evictionInfoDecoder )
     ( Decode.succeed LRU )
+
+
+getMetadata : Settings a -> Task x Metadata
+getMetadata settings =
+  LS.get (toKeyPrefix settings)
+    |> onError (\_ -> Task.succeed Nothing)
+    |> Task.map (decodeMetadata settings)
 
 
 decodeMetadata : Settings a -> Maybe String -> Metadata
