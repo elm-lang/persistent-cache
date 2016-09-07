@@ -33,10 +33,10 @@ addNode { from, to, value } graph =
     addNodeHelp maybeNode =
       case maybeNode of
         Nothing ->
-          [ (to, value) ]
+          Just [ (to, value) ]
 
         Just kids ->
-          (to, value) :: kids
+          Just ((to, value) :: kids)
   in
     if from < to then
       Dict.update from addNodeHelp graph
@@ -65,7 +65,7 @@ shortestPathHelp root goal graph =
     Just (Path 0 [])
 
   else
-    case Dict.get from graph of
+    case Dict.get root graph of
       Nothing ->
         Nothing
 
@@ -82,7 +82,7 @@ shartestSubPath goal graph (root, value) =
       Nothing
 
     Just { length, path } ->
-      Just (Path (length + 1) (value :: path)
+      Just (Path (length + 1) (value :: path))
 
 
 pickShortest : Maybe (Path a) -> List (Path a) -> Maybe (Path a)
@@ -101,4 +101,4 @@ pickShortest shortest unexplored =
             Just contender
 
           else
-            Just shortest
+            shortest
