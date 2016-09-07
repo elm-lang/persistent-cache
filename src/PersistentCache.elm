@@ -259,7 +259,9 @@ addHelp settings time key value ((bits, equeue) as info) =
       getSize qualifiedKey valueString
   in
     if entryBits > settings.maxBits then
-      Task.succeed ( (), info )
+      LS.remove qualifiedKey
+        |> onError (\_ -> Task.succeed ())
+        |> andThen (\_ -> Task.succeed ( (), info ))
 
     else
       let
