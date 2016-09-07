@@ -25,20 +25,17 @@ import Json.Decode as Decode
 import Json.Encode as Encode
 import PersistentCache as Cache
 
-todoCache : Cache.Cache
+todoCache : Cache.Cache Model
 todoCache =
-  Cache.cache "model" 1 1024
+  Cache.cache "model" 1 1024 encode decode
 
 getModel : Task x (Maybe Model)
 getModel =
-  Cache.get todoCache "model" decoder
+  Cache.get todoCache "model"
 
 putModel : Model -> Task x ()
 putModel model =
-  Cache.add todoCache "model" (encode model)
-
--- decoder : Decode.Decoder Model
--- encode : Model -> Encode.Value
+  Cache.add todoCache "model" model
 ```
 
 So we decide that we want to use at most 1mb of space on storing their `Model`. We could crank it all the way up to 5mb (the typical limit for browsers) but there still needs to be a limit. To make things more reliable, store the data on your server as well. Redundancy is a great way to reduce the risk of losing data!
