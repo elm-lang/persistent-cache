@@ -241,17 +241,19 @@ something larger than that. That is also impossible!
 -}
 add : Cache data -> String -> data -> Task x ()
 add (Cache settings) key value =
-  safely settings (addHelp settings key value)
+  safely settings <| \info ->
+    Time.now
+      |> andThen (\time -> addHelp settings (round time) key value info)
 
 
-addHelp : Settings a -> String -> a -> (Int, EQueue) -> Task x ( (), (Int, EQueue) )
-addHelp settings key value ((bits, equeue) as info) =
+addHelp : Settings a -> Int -> String -> a -> (Int, EQueue) -> Task x ( (), (Int, EQueue) )
+addHelp settings time key value ((bits, equeue) as info) =
   let
     qualifiedKey =
       toQualifiedKey settings key
 
     valueString =
-      Encode.encode 0 (settings.encode value)
+      Encode.encode 0 (encodeEntry time (settings.encode value))
 
     entryBits =
       getSize qualifiedKey valueString
