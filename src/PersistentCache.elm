@@ -39,7 +39,7 @@ or just clear out everything and start fresh.
 
 
 import Dict
-import Json.Decode as Decode exposing ((:=))
+import Json.Decode as Decode exposing (field)
 import Json.Encode as Encode
 import String
 import Task exposing (Task)
@@ -131,8 +131,8 @@ get : Cache data -> String -> Task x (Maybe data)
 get (Cache settings) key =
   safely settings <| \info ->
     LS.get (toQualifiedKey settings key)
-      |> andThen (getHelp settings info key)
-      |> onError (\_ -> Task.succeed (Nothing, info))
+      |> Task.andThen (getHelp settings info key)
+      |> Task.onError (\_ -> Task.succeed (Nothing, info))
 
 
 getHelp
@@ -149,7 +149,7 @@ getHelp settings info key maybeString =
     Just string ->
       let
         decoderHelp =
-          Decode.object2 (,) Decode.value settings.decode
+          Decode.map2 (,) Decode.value settings.decode
       in
         case Decode.decodeString (entryDecoder decoderHelp) string of
           Err _ ->
@@ -166,8 +166,8 @@ getHelp settings info key maybeString =
                   Encode.encode 0 (encodeEntry (round time) jsValue)
             in
               Time.now
-                |> andThen setNewValue
-                |> andThen (\_ -> Task.succeed (Just value, correctInfo key info))
+                |> Task.andThen setNewValue
+                |> Task.andThen (\_ -> Task.succeed (Just value, correctInfo key info))
 
 
 correctInfo : String -> (Int, EQueue) -> (Int, EQueue)
@@ -204,11 +204,11 @@ clear (Cache settings) =
     clearRelated keys =
       List.foldl (collectRemovals prefix) [resetMetadata] keys
         |> Task.sequence
-        |> andThen (\_ -> Task.succeed ())
+        |> Task.andThen (\_ -> Task.succeed ())
   in
     LS.keys
-      |> andThen clearRelated
-      |> onError (\_ -> Task.succeed ())
+      |> Task.andThen clearRelated
+      |> Task.onError (\_ -> Task.succeed ())
 
 
 collectRemovals : String -> String -> List (Task LS.Error ()) -> List (Task LS.Error ())
@@ -243,7 +243,7 @@ add : Cache data -> String -> data -> Task x ()
 add (Cache settings) key value =
   safely settings <| \info ->
     Time.now
-      |> andThen (\time -> addHelp settings (round time) key value info)
+      |> Task.andThen (\time -> addHelp settings (round time) key value info)
 
 
 addHelp : Settings a -> Int -> String -> a -> (Int, EQueue) -> Task x ( (), (Int, EQueue) )
@@ -260,8 +260,8 @@ addHelp settings time key value ((bits, equeue) as info) =
   in
     if entryBits > settings.maxBits then
       LS.remove qualifiedKey
-        |> onError (\_ -> Task.succeed ())
-        |> andThen (\_ -> Task.succeed ( (), info ))
+        |> Task.onError (\_ -> Task.succeed ())
+        |> Task.andThen (\_ -> Task.succeed ( (), info ))
 
     else
       let
@@ -277,9 +277,9 @@ addHelp settings time key value ((bits, equeue) as info) =
           trySetWithEviction settings bitsDiff qualifiedKey (\_ _ -> valueString) bits equeue
       in
         LS.get qualifiedKey
-          |> onError (\_ -> Task.succeed Nothing)
+          |> Task.onError (\_ -> Task.succeed Nothing)
           |> Task.map toBitsDiff
-          |> andThen tryAdd
+          |> Task.andThen tryAdd
           |> Task.map ((,) ())
 
 
@@ -292,11 +292,11 @@ safely settings doSomeStuff =
   let
     useMetadata metadata =
       checkVersion settings metadata
-        |> andThen doSomeStuff
-        |> andThen (adjustMetadata settings metadata)
+        |> Task.andThen doSomeStuff
+        |> Task.andThen (adjustMetadata settings metadata)
   in
     getMetadata settings
-      |> andThen useMetadata
+      |> Task.andThen useMetadata
 
 
 adjustMetadata : Settings data -> Metadata -> ( a, (Int, EQueue) ) -> Task x a
@@ -320,7 +320,7 @@ adjustMetadata settings oldMetadata ( answer, (bits, equeue) ) =
             }
       in
         trySetWithEviction settings 0 (toKeyPrefix settings) makeValueString bits equeue
-          |> andThen (\_ -> Task.succeed answer)
+          |> Task.andThen (\_ -> Task.succeed answer)
 
 
 
@@ -341,11 +341,11 @@ migrate settings metadata =
   case findMigration metadata.version settings.version settings.migrations of
     Nothing ->
       clear (Cache settings)
-        |> andThen (\_ -> Task.succeed ( 0, [] ))
+        |> Task.andThen (\_ -> Task.succeed ( 0, [] ))
 
     Just upgrade ->
       crawl settings (migrationStepper upgrade) Dict.empty
-        |> andThen (migrateEntries settings)
+        |> Task.andThen (migrateEntries settings)
 
 
 type alias Keyed a =
@@ -363,15 +363,15 @@ migrationStepper upgrade key oldString entries =
   case Decode.decodeString (entryDecoder Decode.value) oldString of
     Err _ ->
       LS.remove key
-        |> onError (\_ -> Task.succeed ())
-        |> andThen (\_ -> Task.succeed entries)
+        |> Task.onError (\_ -> Task.succeed ())
+        |> Task.andThen (\_ -> Task.succeed entries)
 
     Ok { time, value } ->
       case upgrade key value of
         Nothing ->
           LS.remove key
-            |> onError (\_ -> Task.succeed ())
-            |> andThen (\_ -> Task.succeed entries)
+            |> Task.onError (\_ -> Task.succeed ())
+            |> Task.andThen (\_ -> Task.succeed entries)
 
         Just newValue ->
           let
@@ -417,8 +417,9 @@ migrateEntriesHelp settings bits equeue entryList =
 
         else
           LS.set key data
-            |> Task.toMaybe
-            |> andThen continue
+            |> Task.map Just
+            |> Task.onError (\_ -> Task.succeed Nothing)
+            |> Task.andThen continue
 
 
 
@@ -484,8 +485,8 @@ type alias CrawlStepper x a =
 crawl : Settings data -> CrawlStepper x a -> a -> Task x a
 crawl settings stepper empty =
   LS.keys
-    |> onError (\_ -> Task.succeed [])
-    |> andThen (crawlHelp (toKeyPrefix settings) stepper empty)
+    |> Task.onError (\_ -> Task.succeed [])
+    |> Task.andThen (crawlHelp (toKeyPrefix settings) stepper empty)
 
 
 crawlHelp : String -> CrawlStepper x a -> a -> List String -> Task x a
@@ -500,9 +501,9 @@ crawlHelp prefix stepper acc keys =
 
       else
         LS.get key
-          |> onError (\_ -> Task.succeed Nothing)
-          |> andThen (useStepper stepper acc key)
-          |> andThen (\newAcc -> crawlHelp prefix stepper newAcc remainingKeys)
+          |> Task.onError (\_ -> Task.succeed Nothing)
+          |> Task.andThen (useStepper stepper acc key)
+          |> Task.andThen (\newAcc -> crawlHelp prefix stepper newAcc remainingKeys)
 
 
 useStepper : CrawlStepper x a -> a -> String -> Maybe String -> Task x a
@@ -533,8 +534,8 @@ trySetWithEviction settings bitsDiff key makeValue bits equeue =
 
   else
     LS.set key (makeValue bits equeue)
-      |> andThen (\_ -> Task.succeed (bits + bitsDiff, equeue))
-      |> onError (\_ -> retrySetWithEviction settings bitsDiff key makeValue bits equeue)
+      |> Task.andThen (\_ -> Task.succeed (bits + bitsDiff, equeue))
+      |> Task.onError (\_ -> retrySetWithEviction settings bitsDiff key makeValue bits equeue)
 
 
 retrySetWithEviction
@@ -548,7 +549,7 @@ retrySetWithEviction
 retrySetWithEviction settings bitsDiff key makeValue bits equeue =
   case equeue of
     [] ->
-      flip andThen (getEvictionQueue settings) <| \newQueue ->
+      flip Task.andThen (getEvictionQueue settings) <| \newQueue ->
         if List.isEmpty newQueue then
           Task.succeed (0, [])
         else
@@ -556,8 +557,8 @@ retrySetWithEviction settings bitsDiff key makeValue bits equeue =
 
     {key, data} :: rest ->
       LS.remove key
-        |> onError (\_ -> Task.succeed ())
-        |> andThen (\_ -> trySetWithEviction settings bitsDiff key makeValue (bits - data) rest)
+        |> Task.onError (\_ -> Task.succeed ())
+        |> Task.andThen (\_ -> trySetWithEviction settings bitsDiff key makeValue (bits - data) rest)
 
 
 type alias EQueue =
@@ -575,8 +576,8 @@ evictionStepper key valueString entries =
   case Decode.decodeString entryTimeDecoder valueString of
     Err _ ->
       LS.remove key
-        |> onError (\_ -> Task.succeed ())
-        |> andThen (\_ -> Task.succeed entries)
+        |> Task.onError (\_ -> Task.succeed ())
+        |> Task.andThen (\_ -> Task.succeed entries)
 
     Ok time ->
       Task.succeed <|
@@ -615,17 +616,17 @@ encodeMetadata { version, bits, equeue } =
 
 metadataDecoder : Decode.Decoder Metadata
 metadataDecoder =
-  Decode.object4 Metadata
-    ( "version" := Decode.int )
-    ( "bits" := Decode.int )
-    ( "equeue" := Decode.list evictionInfoDecoder )
+  Decode.map4 Metadata
+    ( field "version" Decode.int )
+    ( field "bits" Decode.int )
+    ( field "equeue" ( Decode.list evictionInfoDecoder ) )
     ( Decode.succeed LRU )
 
 
 getMetadata : Settings a -> Task x Metadata
 getMetadata settings =
   LS.get (toKeyPrefix settings)
-    |> onError (\_ -> Task.succeed Nothing)
+    |> Task.onError (\_ -> Task.succeed Nothing)
     |> Task.map (decodeMetadata settings)
 
 
@@ -659,12 +660,12 @@ encodeEntry id value =
 
 entryDecoder : Decode.Decoder a -> Decode.Decoder (Entry a)
 entryDecoder decoder =
-  Decode.object2 Entry entryTimeDecoder ( "v" := decoder )
+  Decode.map2 Entry entryTimeDecoder ( field "v" decoder )
 
 
 entryTimeDecoder : Decode.Decoder Int
 entryTimeDecoder =
-  ( "t" := Decode.int )
+  ( field "t" Decode.int )
 
 
 
@@ -681,20 +682,6 @@ encodeEvictionInfo { key, data } =
 
 evictionInfoDecoder : Decode.Decoder (Keyed Int)
 evictionInfoDecoder =
-  Decode.object2 Keyed
-    ( "k" := Decode.string )
-    ( "v" := Decode.int )
-
-
-
--- FLIPPED TASK FUNCTIONS
-
-
-andThen : (a -> Task x b) -> Task x a -> Task x b
-andThen callback task =
-  Task.andThen task callback
-
-
-onError : (x -> Task y a) -> Task x a -> Task y a
-onError callback task =
-  Task.onError task callback
+  Decode.map2 Keyed
+    ( field "k" Decode.string )
+    ( field "v" Decode.int )
