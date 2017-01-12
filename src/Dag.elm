@@ -71,12 +71,12 @@ shortestPathHelp root goal graph =
 
       Just kids ->
         kids
-          |> List.filterMap (shartestSubPath goal graph)
+          |> List.filterMap (shortestSubPath goal graph)
           |> pickShortest Nothing
 
 
-shartestSubPath : Int -> Dag a -> (Int, a) -> Maybe (Path a)
-shartestSubPath goal graph (root, value) =
+shortestSubPath : Int -> Dag a -> (Int, a) -> Maybe (Path a)
+shortestSubPath goal graph (root, value) =
   case shortestPathHelp root goal graph of
     Nothing ->
       Nothing
